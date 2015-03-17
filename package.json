@@ -1,0 +1,45 @@
+{
+  "name": "kefir-contrib-stomp",
+  "version": "0.0.1",
+  "description": "Stomp subscriptions as kefir streams.",
+  "main": "lib/index.js",
+  "scripts": {
+    "prepublish": "in-publish && (mkdir lib && coffee -cbo lib src) || in-install",
+    "postpublish": "rm -rf lib",
+    "test": "mocha --no-colors test/**/*-spec.coffee",
+    "watch": "mocha --no-colors --watch test/**/*-spec.coffee"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/systeminsights/kefir-contrib-stomp"
+  },
+  "keywords": [
+    "kefir",
+    "stomp",
+    "messaging",
+    "pubsub"
+  ],
+  "author": "System Insights",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/systeminsights/kefir-contrib-stomp/issues"
+  },
+  "homepage": "https://github.com/systeminsights/kefir-contrib-stomp",
+  "devDependencies": {
+    "chai": "^2.1.1",
+    "chai-as-promised": "^4.3.0",
+    "coffee-script": "^1.9.1",
+    "in-publish": "^1.1.1",
+    "kefir-contrib-run": "0.0.3",
+    "mocha": "^2.2.1"
+  },
+  "dependencies": {
+    "daggy": "0.0.1",
+    "fantasy-contrib-either": "0.0.2",
+    "fantasy-eithers": "0.0.2",
+    "fantasy-options": "0.0.1",
+    "kefir": "^1.1.0",
+    "ramda": "^0.11.0",
+    "stompjs": "^2.3.3"
+  }
+}
