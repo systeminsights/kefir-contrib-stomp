@@ -6,30 +6,28 @@ K = require 'kefir'
 Stomp = require 'stompjs'
 {Transport, Config} = require './config'
 
-# type Subscribe = Headers -> String -> Kefir Error Stomp.Frame
+# type Subscribe = Headers -> String -> Kefir StompError Stomp.Frame
 #
 # Given subscribe headers and a STOMP destination, returns a stream of
 # Stomp.Frames representing the messages published to the destination.
 
-# Possible Error types
-#
-# StompError
-#   ConnectError (proto negotiation failed, else?)
-#   AuthError
-#   FrameError ??
-#
-# Any other validation-y errors?
+# TODO: Any other error types?
 
+# Base type for STOMP-related errors
 class StompError extends Error
   constructor: (@message, @cause) ->
     @name = 'StompError'
 
+# An ERROR frame received from the server
 class FrameError extends StompError
   constructor: (@frame) ->
     super(@frame.toString(), None)
     @name = 'FrameError'
 
 # :: Confg -> Either StompError Stomp.Client
+#
+# Create a Stomp.Client on a live socket from the given Config.
+#
 clientFromConfig = (config) ->
   heartbeat =
     incoming: config.hbRecvFreqMillis
@@ -61,34 +59,22 @@ handleError = (emitter) -> (frameOrString) ->
   else
     emitter.end()
 
-# :: (-> Option String) -> StompError -> Boolean
-relatedToSub = (subId) -> (err) ->
-  if err instanceof FrameError
-    headers = err.frame.headers
-    if R.has('subscription', headers)
-      subId().fold(R.eq(headers.subscription), -> true)
-    else
-      true
-  else
-    true
-
-# :: Stomp.Client -> Object -> String -> Kefir StompError Stomp.Frame
-subscribe = R.curry((client, headers, destination) ->
-  subId = None
-
-  K.fromBinder((emitter) ->
+# :: Kefir _ Boolean -> Stomp.Client -> Object -> String -> Kefir StompError Stomp.Frame
+subscribe = R.curry((connected, client, headers, destination) ->
+  frames = K.fromBinder((emitter) ->
     try
       # NB: This will throw if called while the client is disconnected
-      sub = client.subscribe(destination, emitter.emit, headers)
-      subId = Some(sub.id)
+      # NB: https://github.com/jmesnil/stomp-websocket/issues/107
+      sub = client.subscribe(destination, emitter.emit, R.merge({}, headers))
       sub.unsubscribe
     catch err
       emitter.error(new StompError(
         "Subscribe failed: #{err.message}, destination=#{destination}, headers=#{JSON.stringify(headers)}",
         Some(err)))
       emitter.end()
-      R.always(undefined)
-  ).filterError(relatedToSub(-> subId)))
+      R.always(undefined))
+
+  frames .takeWhileBy connected)
 
 # :: Config -> Property Error Subscribe
 #
@@ -104,16 +90,19 @@ subscribe = R.curry((client, headers, destination) ->
 subscribes = (config) ->
   headers = config.credentials.fold(R.merge, -> R.identity)({host: config.vhost})
 
-  K.fromBinder((emitter) ->
+  subs = K.fromBinder((emitter) ->
     clientFromConfig(config).fold(
       ((err) ->
         emitter.error(err)
         emitter.end()
         R.always(undefined)),
       ((client) ->
-        client.connect(headers, (-> emitter.emit(client)), handleError(emitter))
-        client.disconnect.bind(client)))
-  ).map(subscribe).toProperty()
+        # NB: https://github.com/jmesnil/stomp-websocket/issues/107
+        client.connect(R.merge({}, headers), (-> emitter.emit(client)), handleError(emitter))
+        client.disconnect.bind(client))))
+
+  connected = subs.mapTo(true).mapEnd(R.always(false)).toProperty(true)
+  subs.map(subscribe(connected)).toProperty()
 
 module.exports = {subscribes, Transport, Config, StompError, FrameError}
 
