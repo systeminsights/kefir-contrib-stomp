@@ -11,8 +11,6 @@ Stomp = require 'stompjs'
 # Given subscribe headers and a STOMP destination, returns a stream of
 # Stomp.Frames representing the messages published to the destination.
 
-# TODO: Any other error types?
-
 # Base type for STOMP-related errors
 class StompError extends Error
   constructor: (@message, @cause) ->
@@ -82,10 +80,6 @@ subscribe = R.curry((connected, client, headers, destination) ->
 #
 # Errors are emitted for connection issues as well as STOMP errors during
 # operation.
-#
-# TODO: What types of errors does STOMP emit? Do we want to swallow any of them
-#       (i.e. spurious unsubscribes?) To start with, just be conservative and restart
-#       on any error, we can pare this down if it becomes too frequent.
 #
 subscribes = (config) ->
   headers = config.credentials.fold(R.merge, -> R.identity)({host: config.vhost})

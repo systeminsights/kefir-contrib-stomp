@@ -1,6 +1,6 @@
 {
   "name": "kefir-contrib-stomp",
-  "version": "0.0.1",
+  "version": "0.0.0",
   "description": "Stomp subscriptions as kefir streams.",
   "main": "lib/index.js",
   "scripts": {
