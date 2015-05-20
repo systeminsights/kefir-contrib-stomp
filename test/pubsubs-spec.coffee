@@ -1,9 +1,10 @@
 R = require 'ramda'
+K = require 'kefir'
 {head, last, runLog, runLogValues} = require 'kefir-contrib-run'
 {Frame} = require 'stompjs'
 {Some, None} = require 'fantasy-options'
 {Left, Right} = require 'fantasy-eithers'
-{subscribes, Transport, Config, StompError, FrameError} = require '../src/index'
+{pubSubs, Transport, Config, StompError, FrameError} = require '../src/index'
 socket = require './test-socket'
 doAsync = require './do-async'
 
@@ -20,7 +21,7 @@ nohbCfg = (ws) ->
 
 setup = ->
   sock = mkSocket()
-  [sock, subscribes(nohbCfg(-> Right(sock.ws)))]
+  [sock, pubSubs(nohbCfg(-> Right(sock.ws)))]
 
 emitFrame = (sock, frame) -> () ->
   sock.emitMessage(frame.toString())
@@ -33,50 +34,50 @@ connected = ->
 emitConnected = (sock) ->
   emitFrame(sock, connected())
 
-describe "subscribes", ->
+describe "pubSubs", ->
   it "should emit Ws create error and end", ->
     err = new Error("Create failed")
-    s = subscribes(nohbCfg(-> Left(err)))
-    expect(head(s)).to.be.rejectedWith(StompError, /Create failed/)
+    ps = pubSubs(nohbCfg(-> Left(err)))
+    expect(head(ps)).to.be.rejectedWith(StompError, /Create failed/)
 
   it "should connect to the server on activation", ->
     sock = mkSocket()
     hdrs = {host: 'foo.example.com', login: 'baz', passcode: 'quux'}
     hdrs = R.assoc('heart-beat', '5000,10000', hdrs)
     hdrs = R.assoc('accept-version', '1.1,1.0', hdrs)
-    subs = subscribes(cfg((-> Right(sock.ws)), 5000, 10000))
+    ps = pubSubs(cfg((-> Right(sock.ws)), 5000, 10000))
 
     doAsync [
-      (-> subs.onValue(->))
+      (-> ps.onValue(->))
       sock.emitOpen
     ]
 
     expect(head(sock.sent)).to.become(Some(new Frame('CONNECT', hdrs)))
 
   it "should gracefully disconnect from the server on deactivation", ->
-    [sock, subs] = setup()
+    [sock, ps] = setup()
     f = ->
 
     doAsync [
-      (-> subs.onValue(f))
+      (-> ps.onValue(f))
       sock.emitOpen
-      (-> subs.offValue(f))
+      (-> ps.offValue(f))
     ]
 
     expect(last(sock.sent)).to.become(Some(new Frame('DISCONNECT')))
 
   it "should end when connection to server is closed", ->
-    [sock, subs] = setup()
+    [sock, ps] = setup()
 
     doAsync [
       sock.emitOpen
       sock.emitClose
     ]
 
-    expect(head(subs)).to.become(None)
+    expect(head(ps)).to.become(None)
 
   it "should emit ERROR frames from the stomp server", ->
-    [sock, subs] = setup()
+    [sock, ps] = setup()
     msg = 'Connection refused'
     err = new Frame('ERROR', R.createMapEntry('content-length', msg.length.toString()), msg)
 
@@ -86,10 +87,10 @@ describe "subscribes", ->
       sock.emitClose
     ]
 
-    expect(last(subs.errorsToValues())).to.become(Some(new FrameError(err)))
+    expect(last(ps.errorsToValues())).to.become(Some(new FrameError(err)))
 
-  it "should emit a function for subscribing to STOMP topics when connected", ->
-    [sock, subs] = setup()
+  it "should emit a PubSub object for interacting with STOMP when connected", ->
+    [sock, ps] = setup()
 
     doAsync [
       sock.emitOpen
@@ -97,15 +98,16 @@ describe "subscribes", ->
       sock.emitClose
     ]
 
-    expect(last(subs)).to.be.fulfilled.and.eventually.have.property('x').that.is.an.instanceof(Function)
+    expect(last(ps) .then R.invoke('getOrElse', {}))
+      .to.eventually.have.ownProperty('subscribe').and.ownProperty('publish')
 
-  describe "subscribed stream", ->
+  describe "subscribe", ->
     it "should subscribe to the stomp topic using the headers given on activation", ->
-      [sock, subs] = setup()
+      [sock, ps] = setup()
       dest = '/topic/wibble'
       subHdrs = {id: "3f2a17", persistent: "true"}
       sub = new Frame('SUBSCRIBE', R.assoc('destination', dest, subHdrs))
-      wibbles = subs .flatMap R.flip(R.apply)([subHdrs, dest])
+      wibbles = ps .flatMap R.invoke('subscribe', [subHdrs, dest])
 
       doAsync [
         (-> wibbles.onValue(->))
@@ -117,10 +119,10 @@ describe "subscribes", ->
       expect(last(sock.sent)).to.become(Some(sub))
 
     it "should unsubscribe from the stomp topic on deactivation", ->
-      [sock, subs] = setup()
+      [sock, ps] = setup()
       hdrs = {id: "1245"}
       unsub = new Frame('UNSUBSCRIBE', hdrs)
-      wobbles = subs .flatMapLatest R.flip(R.apply)([hdrs, '/topic/wobbles'])
+      wobbles = ps .flatMapLatest R.invoke('subscribe', [hdrs, '/topic/wobbles'])
       f = ->
 
       doAsync [
@@ -133,8 +135,8 @@ describe "subscribes", ->
       expect(last(sock.sent.take(3))).to.become(Some(unsub))
 
     it "should emit a Stomp.Frame for each message received for the subscription", ->
-      [sock, subs] = setup()
-      wibbles = subs .flatMapLatest R.flip(R.apply)([{id: '1'}, '/topic/wibble'])
+      [sock, ps] = setup()
+      wibbles = ps .flatMapLatest R.invoke('subscribe', [{id: '1'}, '/topic/wibble'])
 
       hdrs = (sub, id) ->
         h = {subscription: sub, destination: '/topic/wibble'}
@@ -157,4 +159,29 @@ describe "subscribes", ->
       ]
 
       expect(runLogValues(wibbles.map(R.omit(['ack', 'nack'])))).to.become([wA, wC])
+
+  describe "publish", ->
+    it "should publish message bodies to the topic, including the provided headers", ->
+      [sock, ps] = setup()
+      dest = '/topic/wibble/42'
+      hdrs = {requestId: 'fa3c21', destination: dest}
+      hdrs['content-length'] = '1'
+      sends = ps .flatMap R.invoke('publish', [hdrs, dest])
+      bodies = K.sequentially(100, ["A", "B", "C"])
+
+      sA = new Frame('SEND', hdrs, "A")
+      sB = new Frame('SEND', hdrs, "B")
+      sC = new Frame('SEND', hdrs, "C")
+
+      sends.combine(bodies, (f, a) -> f(a))
+        .take(3)
+        .onValue((t) -> t())
+        .onEnd(sock.emitClose)
+
+      doAsync [
+        sock.emitOpen
+        emitConnected(sock)
+      ]
+
+      expect(runLogValues(sock.sent.skip(1))).to.become([sA, sB, sC])
 

@@ -39,7 +39,7 @@
     "fantasy-eithers": "0.0.2",
     "fantasy-options": "0.0.1",
     "kefir": "^1.1.0",
-    "ramda": "^0.11.0",
+    "ramda": "^0.14.0",
     "stompjs": "^2.3.3"
   }
 }

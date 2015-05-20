@@ -6,11 +6,6 @@ K = require 'kefir'
 Stomp = require 'stompjs'
 {Transport, Config} = require './config'
 
-# type Subscribe = Headers -> String -> Kefir StompError Stomp.Frame
-#
-# Given subscribe headers and a STOMP destination, returns a stream of
-# Stomp.Frames representing the messages published to the destination.
-
 # Base type for STOMP-related errors
 class StompError extends Error
   constructor: (@message, @cause) ->
@@ -57,34 +52,66 @@ handleError = (emitter) -> (frameOrString) ->
   else
     emitter.end()
 
-# :: Kefir _ Boolean -> Stomp.Client -> Object -> String -> Kefir StompError Stomp.Frame
-subscribe = R.curry((connected, client, headers, destination) ->
-  frames = K.fromBinder((emitter) ->
-    try
-      # NB: This will throw if called while the client is disconnected
-      # NB: https://github.com/jmesnil/stomp-websocket/issues/107
-      sub = client.subscribe(destination, emitter.emit, R.merge({}, headers))
-      sub.unsubscribe
-    catch err
-      emitter.error(new StompError(
-        "Subscribe failed: #{err.message}, destination=#{destination}, headers=#{JSON.stringify(headers)}",
-        Some(err)))
-      emitter.end()
-      R.always(undefined))
+# :: Property StompError Boolean -> Stomp.Client -> PubSub
+pubSub = R.curry (connected, client) ->
+  mkError = (action, headers, destination, cause) ->
+    new StompError(
+      "#{action} failed: #{cause.message}, destination=#{destination}, headers=#{JSON.stringify(headers)}",
+      Some(cause))
 
-  frames .takeWhileBy connected)
+  subscribe = R.curry (headers, destination) ->
+    frames = K.fromBinder (emitter) ->
+      try
+        # NB: This will throw if called while the client is disconnected
+        # NB: https://github.com/jmesnil/stomp-websocket/issues/107
+        sub = client.subscribe(destination, emitter.emit, R.merge({}, headers))
+        sub.unsubscribe
+      catch err
+        emitter.error(mkError("Subscribe", headers, destination, err))
+        emitter.end()
+        R.always(undefined)
 
-# :: Config -> Property Error Subscribe
+    frames .takeWhileBy connected
+
+  publish = R.curry (headers, destination) ->
+    sink = K.fromBinder (emitter) ->
+      pub = (body) -> () ->
+        try
+          client.send(destination, R.merge({}, headers), body)
+        catch err
+          emitter.error(mkError("Publish", headers, destination, err))
+          emitter.end()
+
+      emitter.emit(pub)
+      undefined
+
+    connected
+      .flatMapLatest((isConnected) -> if isConnected then sink.toProperty() else K.never())
+      .toProperty()
+
+  {publish, subscribe}
+
+# :: Config -> Property Error PubSub
 #
-# Returns a stream of functions for subscribing to a STOMP destination.
+# Returns a property of a PubSub object for interacting with STOMP
+#
+# type PubSub =
+#   subscribe :: Headers -> String -> Kefir StompError Stomp.Frame
+#   publish   :: Headers -> String -> Property StompError (String -> () -> ())
+#
+# `subscribe` accepts a header object and a destination and returns a stream
+# of Stomp.Frames sent to that destination. `publish` accepts a header object
+# and a destination and returns a property of a publisher function. This function
+# accepts the string body to publish to the destination and returns a thunk which,
+# when forced, will send the message.
 #
 # Errors are emitted for connection issues as well as STOMP errors during
 # operation.
 #
-subscribes = (config) ->
+pubSubs = (config) ->
   headers = config.credentials.fold(R.merge, -> R.identity)({host: config.vhost})
 
-  subs = K.fromBinder((emitter) ->
+  clients = K.fromBinder (emitter) ->
     clientFromConfig(config).fold(
       ((err) ->
         emitter.error(err)
@@ -93,10 +120,10 @@ subscribes = (config) ->
       ((client) ->
         # NB: https://github.com/jmesnil/stomp-websocket/issues/107
         client.connect(R.merge({}, headers), (-> emitter.emit(client)), handleError(emitter))
-        client.disconnect.bind(client))))
+        client.disconnect.bind(client)))
 
-  connected = subs.mapTo(true).mapEnd(R.always(false)).toProperty(true)
-  subs.map(subscribe(connected)).toProperty()
+  connected = clients.map(R.always(true)).mapEnd(R.always(false)).toProperty(true)
+  clients.map(pubSub(connected)).toProperty()
 
-module.exports = {subscribes, Transport, Config, StompError, FrameError}
+module.exports = {pubSubs, Transport, Config, StompError, FrameError}
 
