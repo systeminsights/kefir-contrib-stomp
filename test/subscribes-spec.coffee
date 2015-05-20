@@ -5,6 +5,7 @@ R = require 'ramda'
 {Left, Right} = require 'fantasy-eithers'
 {subscribes, Transport, Config, StompError, FrameError} = require '../src/index'
 socket = require './test-socket'
+doAsync = require './do-async'
 
 mkSocket = ->
   s = socket('ws://example.com/stomp')
@@ -32,12 +33,6 @@ connected = ->
 emitConnected = (sock) ->
   emitFrame(sock, connected())
 
-doAsync = (thunks) ->
-  process.nextTick(->
-    unless R.isEmpty(thunks)
-      R.head(thunks)()
-      doAsync(R.tail(thunks)))
-
 describe "subscribes", ->
   it "should emit Ws create error and end", ->
     err = new Error("Create failed")
@@ -51,10 +46,10 @@ describe "subscribes", ->
     hdrs = R.assoc('accept-version', '1.1,1.0', hdrs)
     subs = subscribes(cfg((-> Right(sock.ws)), 5000, 10000))
 
-    doAsync([
-      (-> subs.onValue(->)),
+    doAsync [
+      (-> subs.onValue(->))
       sock.emitOpen
-    ])
+    ]
 
     expect(head(sock.sent)).to.become(Some(new Frame('CONNECT', hdrs)))
 
@@ -62,21 +57,21 @@ describe "subscribes", ->
     [sock, subs] = setup()
     f = ->
 
-    doAsync([
-      (-> subs.onValue(f)),
-      sock.emitOpen,
+    doAsync [
+      (-> subs.onValue(f))
+      sock.emitOpen
       (-> subs.offValue(f))
-    ])
+    ]
 
     expect(last(sock.sent)).to.become(Some(new Frame('DISCONNECT')))
 
   it "should end when connection to server is closed", ->
     [sock, subs] = setup()
 
-    doAsync([
-      sock.emitOpen,
+    doAsync [
+      sock.emitOpen
       sock.emitClose
-    ])
+    ]
 
     expect(head(subs)).to.become(None)
 
@@ -85,22 +80,22 @@ describe "subscribes", ->
     msg = 'Connection refused'
     err = new Frame('ERROR', R.createMapEntry('content-length', msg.length.toString()), msg)
 
-    doAsync([
-      sock.emitOpen,
-      emitFrame(sock, err),
+    doAsync [
+      sock.emitOpen
+      emitFrame(sock, err)
       sock.emitClose
-    ])
+    ]
 
     expect(last(subs.errorsToValues())).to.become(Some(new FrameError(err)))
 
   it "should emit a function for subscribing to STOMP topics when connected", ->
     [sock, subs] = setup()
 
-    doAsync([
-      sock.emitOpen,
-      emitConnected(sock),
+    doAsync [
+      sock.emitOpen
+      emitConnected(sock)
       sock.emitClose
-    ])
+    ]
 
     expect(last(subs)).to.be.fulfilled.and.eventually.have.property('x').that.is.an.instanceof(Function)
 
@@ -112,12 +107,12 @@ describe "subscribes", ->
       sub = new Frame('SUBSCRIBE', R.assoc('destination', dest, subHdrs))
       wibbles = subs .flatMap R.flip(R.apply)([subHdrs, dest])
 
-      doAsync([
-        (-> wibbles.onValue(->)),
-        sock.emitOpen,
-        emitConnected(sock),
+      doAsync [
+        (-> wibbles.onValue(->))
+        sock.emitOpen
+        emitConnected(sock)
         sock.emitClose
-      ])
+      ]
 
       expect(last(sock.sent)).to.become(Some(sub))
 
@@ -128,12 +123,12 @@ describe "subscribes", ->
       wobbles = subs .flatMapLatest R.flip(R.apply)([hdrs, '/topic/wobbles'])
       f = ->
 
-      doAsync([
-        (-> wobbles.onValue(f)),
-        sock.emitOpen,
-        emitConnected(sock),
+      doAsync [
+        (-> wobbles.onValue(f))
+        sock.emitOpen
+        emitConnected(sock)
         (-> wobbles.offValue(f))
-      ])
+      ]
 
       expect(last(sock.sent.take(3))).to.become(Some(unsub))
 
@@ -152,14 +147,14 @@ describe "subscribes", ->
       wB = new Frame('MESSAGE', hdrs('2', '2'), "B")
       wC = new Frame('MESSAGE', hdrs('1', '3'), "C")
 
-      doAsync([
-        sock.emitOpen,
-        emitConnected(sock),
-        emitFrame(sock, wA),
-        emitFrame(sock, wB),
-        emitFrame(sock, wC),
+      doAsync [
+        sock.emitOpen
+        emitConnected(sock)
+        emitFrame(sock, wA)
+        emitFrame(sock, wB)
+        emitFrame(sock, wC)
         sock.emitClose
-      ])
+      ]
 
       expect(runLogValues(wibbles.map(R.omit(['ack', 'nack'])))).to.become([wA, wC])
 
