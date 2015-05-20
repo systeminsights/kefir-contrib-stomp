@@ -6,7 +6,7 @@ R = require 'ramda'
 # process.
 #
 doAsync = (thunks) ->
-  process.nextTick(->
+  setImmediate(->
     unless R.isEmpty(thunks)
       R.head(thunks)()
       doAsync(R.tail(thunks)))
