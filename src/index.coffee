@@ -5,12 +5,6 @@ K = require 'kefir'
 {foreach} = require 'fantasy-contrib-either'
 Stomp = require 'stompjs'
 {Transport, Config} = require './config'
-PubSub = require './pubsub'
-
-# type Subscribe = Headers -> String -> Kefir StompError Stomp.Frame
-#
-# Given subscribe headers and a STOMP destination, returns a stream of
-# Stomp.Frames representing the messages published to the destination.
 
 # Base type for STOMP-related errors
 class StompError extends Error
@@ -27,7 +21,7 @@ class FrameError extends StompError
 #
 # Create a Stomp.Client on a live socket from the given Config.
 #
-clientFromConfig = (config) ->
+stompFromConfig = (config) ->
   heartbeat =
     incoming: config.hbRecvFreqMillis
     outgoing: config.hbSendFreqMillis
@@ -35,16 +29,16 @@ clientFromConfig = (config) ->
   mkError = (wsErr) ->
     new StompError("Error creating socket: #{wsErr.message}", Some(wsErr))
 
-  client = config.transport.cata(
+  stompClient = config.transport.cata(
     Tcp: (h, p) -> Right(Stomp.overTCP(h, p))
     Ws:  (ws)   -> ws().bimap(mkError, Stomp.over))
 
   foreach((c) ->
     c.debug     = false
     c.heartbeat = heartbeat
-  )(client)
+  )(stompClient)
 
-  client
+  stompClient
 
 # :: Kefir.Emitter -> (Stomp.Frame | String) -> ()
 #
@@ -58,52 +52,66 @@ handleError = (emitter) -> (frameOrString) ->
   else
     emitter.end()
 
-# :: PubSub -> Object -> String -> Kefir StompError Stomp.Frame
-subscribe = R.curry((pubsub, headers, destination) ->
-  frames = K.fromBinder((emitter) ->
+# :: Config -> Property StompError Client
+#
+# Returns a property of a `Client` which may be used to send and subscribe to
+# Stomp messages. The `Client` has the following properties
+#
+#   type Destination = String
+#   type Headers = Object
+#   type Body = String
+#   type OnFrame = Stomp.Frame -> ()
+#
+#   connected :: Property StompError Boolean -- whether the client is connected to the server
+#   publish :: Destination -> Headers -> Body -> () -- publish the body to the specified Stomp destination
+#   subscribe :: Destination -> Headers -> OnFrame -> SubId -- subscribe to messages from the destination
+#   unsubscribe :: SubId -> () -- cancel the subscription represented by the given `SubId`
+#
+clients = (config) ->
+  headers = config.credentials.fold(R.merge, -> R.identity)({host: config.vhost})
+
+  clientFromStomp = (stomp) ->
+    # NB: We initialize the property with `true` as we only create the client on successful connect
+    connected:   clientStream.map(R.always(true)).mapEnd(R.always(false)).toProperty(true)
+    publish:     stomp.send.bind(stomp)
+    # NB: https://github.com/jmesnil/stomp-websocket/issues/107
+    subscribe:   (dest, hdrs, onMsg) -> stomp.subscribe(dest, onMsg, R.merge({}, hdrs))
+    unsubscribe: stomp.unsubscribe.bind(stomp)
+
+  clientStream = K.fromBinder (emitter) ->
+    stompFromConfig(config).fold(
+      ((err) ->
+        emitter.error(err)
+        emitter.end()
+        R.always(undefined)),
+      ((stomp) ->
+        # NB: https://github.com/jmesnil/stomp-websocket/issues/107
+        stomp.connect(R.merge({}, headers), (-> emitter.emit(clientFromStomp(stomp))), handleError(emitter))
+        stomp.disconnect.bind(stomp)))
+
+  clientStream
+
+# :: Client -> Object -> String -> Kefir StompError Stomp.Frame
+#
+# Given a `Client` (as provided by the `clients` function), subscription headers
+# and a destination, returns a stream of `Stomp.Frame`s published to the destination.
+#
+# The resulting stream will end if the client becomes disconnected.
+#
+frames = R.curry (client, headers, destination) ->
+  frameStream = K.fromBinder (emitter) ->
     try
       # NB: This will throw if called while the client is disconnected
-      # NB: https://github.com/jmesnil/stomp-websocket/issues/107
-      sub = pubsub.subscribe(destination, emitter.emit, R.merge({}, headers))
-      () -> pubsub.unsubscribe(sub)
+      subId = client.subscribe(destination, headers, emitter.emit)
+      () -> client.unsubscribe(subId)
     catch err
       emitter.error(new StompError(
         "Subscribe failed: #{err.message}, destination=#{destination}, headers=#{JSON.stringify(headers)}",
         Some(err)))
       emitter.end()
-      R.always(undefined))
+      R.always(undefined)
 
-  frames .takeWhileBy pubsub.connected)
+  frameStream .takeWhileBy client.connected
 
-# :: Config -> Kefir StompError PubSub
-#
-pubsubsFromStomp = (config) ->
-  headers = config.credentials.fold(R.merge, -> R.identity)({host: config.vhost})
-
-  pubsubFromStomp = (client) ->
-    create(
-      pubsubs.map(R.always(true)).mapEnd(R.always(false)),
-      client.send.bind(client),
-      (d, h, cb) -> client.subscribe(d, cb, h),
-      client.unsubscribe.bind(client))
-
-  pubsubs = K.fromBinder((emitter) ->
-    clientFromConfig(config).fold(
-      ((err) ->
-        emitter.error(err)
-        emitter.end()
-        R.always(undefined)),
-      ((client) ->
-        # NB: https://github.com/jmesnil/stomp-websocket/issues/107
-        client.connect(R.merge({}, headers), (-> emitter.emit(pubsubFromStomp(client))), handleError(emitter))
-        client.disconnect.bind(client))))
-
-# :: Kefir Error Stomp.Client -> Property Error Subscribe
-#
-# Returns a stream of functions for subscribing to a STOMP destination.
-#
-# Errors are emitted for connection issues as well as STOMP errors during
-# operation.
-
-module.exports = {subscribe, pubsubsFromStomp, Transport, Config, StompError, FrameError}
+module.exports = {clients, frames, Transport, Config, StompError, FrameError}
 
