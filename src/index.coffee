@@ -3,7 +3,7 @@ K = require 'kefir'
 {Some, None} = require 'fantasy-options'
 {Right} = require 'fantasy-eithers'
 {foreach} = require 'fantasy-contrib-either'
-Stomp = require 'stompjs'
+{Stomp} = require 'stompjs/lib/stomp'
 {Transport, Config} = require './config'
 
 # Base type for STOMP-related errors
@@ -126,4 +126,3 @@ pubSubs = (config) ->
   clients.map(pubSub(connected)).toProperty()
 
 module.exports = {pubSubs, Transport, Config, StompError, FrameError}
-

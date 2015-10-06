@@ -6,8 +6,8 @@
   "scripts": {
     "prepublish": "in-publish && (mkdir lib && coffee -cbo lib src) || in-install",
     "postpublish": "rm -rf lib",
-    "test": "mocha --no-colors test/**/*-spec.coffee",
-    "watch": "mocha --no-colors --watch test/**/*-spec.coffee"
+    "test": "mocha test/**/*-spec.coffee",
+    "watch": "mocha --watch test/**/*-spec.coffee"
   },
   "repository": {
     "type": "git",
